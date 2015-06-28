@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"strconv"
@@ -133,33 +134,42 @@ func (m JVMPlugin) GraphDefinition() map[string](mp.Graphs) {
 				mp.Metrics{Name: "FGCT", Label: "Full GC time", Diff: true},
 			},
 		},
+		fmt.Sprintf("jvm.%s.gc_time_percentage", lowerJavaName): mp.Graphs{
+			Label: fmt.Sprintf("JVM %s GC time percentage", rawJavaName),
+			Unit:  "percentage",
+			Metrics: [](mp.Metrics){
+				// gc_time_percentage is the percentage of gc time to 60 sec.
+				mp.Metrics{Name: "YGCT", Label: "Young GC time", Diff: true, Scale: (0.001 / 60)},
+				mp.Metrics{Name: "FGCT", Label: "Full GC time", Diff: true, Scale: (0.001 / 60)},
+			},
+		},
 		fmt.Sprintf("jvm.%s.new_space", lowerJavaName): mp.Graphs{
-			Label: fmt.Sprintf("JVM %s New Space memory (KB)", rawJavaName),
+			Label: fmt.Sprintf("JVM %s New Space memory", rawJavaName),
 			Unit:  "float",
 			Metrics: [](mp.Metrics){
-				mp.Metrics{Name: "NGCMX", Label: "New max", Diff: false},
-				mp.Metrics{Name: "NGC", Label: "New current", Diff: false},
-				mp.Metrics{Name: "EU", Label: "Eden used", Diff: false},
-				mp.Metrics{Name: "S0U", Label: "Survivor0 used", Diff: false},
-				mp.Metrics{Name: "S1U", Label: "Survivor1 used", Diff: false},
+				mp.Metrics{Name: "NGCMX", Label: "New max", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "NGC", Label: "New current", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "EU", Label: "Eden used", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "S0U", Label: "Survivor0 used", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "S1U", Label: "Survivor1 used", Diff: false, Scale: 1024},
 			},
 		},
 		fmt.Sprintf("jvm.%s.old_space", lowerJavaName): mp.Graphs{
-			Label: fmt.Sprintf("JVM %s Old Space memory (KB)", rawJavaName),
+			Label: fmt.Sprintf("JVM %s Old Space memory", rawJavaName),
 			Unit:  "float",
 			Metrics: [](mp.Metrics){
-				mp.Metrics{Name: "OGCMX", Label: "Old max", Diff: false},
-				mp.Metrics{Name: "OGC", Label: "Old current", Diff: false},
-				mp.Metrics{Name: "OU", Label: "Old used", Diff: false},
+				mp.Metrics{Name: "OGCMX", Label: "Old max", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "OGC", Label: "Old current", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "OU", Label: "Old used", Diff: false, Scale: 1024},
 			},
 		},
 		fmt.Sprintf("jvm.%s.perm_space", lowerJavaName): mp.Graphs{
-			Label: fmt.Sprintf("JVM %s Permanent Space (KB)", rawJavaName),
+			Label: fmt.Sprintf("JVM %s Permanent Space", rawJavaName),
 			Unit:  "float",
 			Metrics: [](mp.Metrics){
-				mp.Metrics{Name: "PGCMX", Label: "Perm max", Diff: false},
-				mp.Metrics{Name: "PGC", Label: "Perm current", Diff: false},
-				mp.Metrics{Name: "PU", Label: "Perm used", Diff: false},
+				mp.Metrics{Name: "PGCMX", Label: "Perm max", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "PGC", Label: "Perm current", Diff: false, Scale: 1024},
+				mp.Metrics{Name: "PU", Label: "Perm used", Diff: false, Scale: 1024},
 			},
 		},
 	}
@@ -171,24 +181,38 @@ func main() {
 	optJstatPath := flag.String("jstatpath", "/usr/bin/jstat", "jstat path")
 	optJpsPath := flag.String("jpspath", "/usr/bin/jps", "jps path")
 	optJavaName := flag.String("javaname", "", "Java app name")
+	optPidFile := flag.String("pidfile", "", "pidfile path")
 	optTempfile := flag.String("tempfile", "", "Temp file name")
 	flag.Parse()
 
+	var jvm JVMPlugin
+	jvm.Target = fmt.Sprintf("%s:%s", *optHost, *optPort)
+	jvm.JstatPath = *optJstatPath
+
 	if *optJavaName == "" {
-		logger.Errorf("javaname is required")
+		logger.Errorf("javaname is required (if you use 'pidfile' option, 'javaname' is used as just a prefix of graph label)")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
-	var jvm JVMPlugin
-	jvm.Target = fmt.Sprintf("%s:%s", *optHost, *optPort)
-	lvmid, err := FetchLvmidByAppname(*optJavaName, jvm.Target, *optJpsPath)
-	if err != nil {
-		logger.Errorf("Failed to fetch lvmid. %s", err)
-		os.Exit(1)
+	if *optPidFile == "" {
+		lvmid, err := FetchLvmidByAppname(*optJavaName, jvm.Target, *optJpsPath)
+		if err != nil {
+			logger.Errorf("Failed to fetch lvmid. %s", err)
+			os.Exit(1)
+		}
+		jvm.Lvmid = lvmid
+	} else {
+		// https://docs.oracle.com/javase/7/docs/technotes/tools/share/jps.html
+		// `The lvmid is typically, but not necessarily, the operating system's process identifier for the JVM process.`
+		pid, err := ioutil.ReadFile(*optPidFile)
+		if err != nil {
+			logger.Errorf("Failed to load pid. %s", err)
+			os.Exit(1)
+		}
+		jvm.Lvmid = strings.Replace(string(pid), "\n", "", 1)
 	}
-	jvm.Lvmid = lvmid
-	jvm.JstatPath = *optJstatPath
+
 	jvm.JavaName = *optJavaName
 
 	helper := mp.NewMackerelPlugin(jvm)

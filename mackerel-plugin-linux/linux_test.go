@@ -25,7 +25,7 @@ test2  pts/48       2014-09-30 09:00 (192.168.24.123)`
 
 	err := parseWho(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["users"], 3)
+	assert.EqualValues(t, stat["users"], 3)
 }
 
 func TestParseWho2(t *testing.T) {
@@ -34,7 +34,7 @@ func TestParseWho2(t *testing.T) {
 
 	err := parseWho(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["users"], 0)
+	assert.EqualValues(t, stat["users"], 0)
 }
 
 func TestGetWho(t *testing.T) {
@@ -68,9 +68,9 @@ func TestParseProcStat(t *testing.T) {
 
 	err := parseProcStat(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["interrupts"], 614818624)
-	assert.Equal(t, stat["context_switches"], 879305394)
-	assert.Equal(t, stat["forks"], 1959410)
+	assert.EqualValues(t, stat["interrupts"], 614818624)
+	assert.EqualValues(t, stat["context_switches"], 879305394)
+	assert.EqualValues(t, stat["forks"], 1959410)
 }
 
 func TestCollectProcDiskstats(t *testing.T) {
@@ -93,10 +93,10 @@ func TestParseProcDiskstats(t *testing.T) {
 
 	err := parseProcDiskstats(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["iotime_sda"], 23865772)
-	assert.Equal(t, stat["iotime_weighted_sda"], 436201338)
-	assert.Equal(t, stat["tsreading_sda"], 12441261)
-	assert.Equal(t, stat["tswriting_sda"], 423711425)
+	assert.EqualValues(t, stat["iotime_sda"], 23865772)
+	assert.EqualValues(t, stat["iotime_weighted_sda"], 436201338)
+	assert.EqualValues(t, stat["tsreading_sda"], 12441261)
+	assert.EqualValues(t, stat["tswriting_sda"], 423711425)
 }
 
 func TestCollectSs(t *testing.T) {
@@ -119,9 +119,9 @@ ESTAB      0      0                              10.0.25.101:60826              
 
 	err := parseSs(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["LISTEN"], 2)
-	assert.Equal(t, stat["TIME-WAIT"], 1)
-	assert.Equal(t, stat["ESTAB"], 1)
+	assert.EqualValues(t, stat["LISTEN"], 2)
+	assert.EqualValues(t, stat["TIME-WAIT"], 1)
+	assert.EqualValues(t, stat["ESTAB"], 1)
 }
 
 func TestParseSs2(t *testing.T) {
@@ -136,9 +136,9 @@ u_str ESTAB      0      0                                    @/com/ubuntu/upstar
 
 	err := parseSs(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["LISTEN"], 2)
-	assert.Equal(t, stat["UNCONN"], 3)
-	assert.Equal(t, stat["ESTAB"], 1)
+	assert.EqualValues(t, stat["LISTEN"], 2)
+	assert.EqualValues(t, stat["UNCONN"], 3)
+	assert.EqualValues(t, stat["ESTAB"], 1)
 }
 
 func TestGetSs(t *testing.T) {
@@ -173,10 +173,10 @@ pswpout 113`
 
 	err := parseProcVmstat(stub, &stat)
 	assert.Nil(t, err)
-	assert.Equal(t, stat["pgpgin"], 770294)
-	assert.Equal(t, stat["pgpgout"], 31351354)
-	assert.Equal(t, stat["pswpin"], 0)
-	assert.Equal(t, stat["pswpout"], 113)
+	assert.EqualValues(t, stat["pgpgin"], 770294)
+	assert.EqualValues(t, stat["pgpgout"], 31351354)
+	assert.EqualValues(t, stat["pswpin"], 0)
+	assert.EqualValues(t, stat["pswpout"], 113)
 }
 
 func TestGetProc(t *testing.T) {

@@ -6,9 +6,12 @@ import (
 	"flag"
 	"fmt"
 	mp "github.com/mackerelio/go-mackerel-plugin"
+	"github.com/mackerelio/mackerel-agent/logging"
 	"net/http"
 	"os"
 )
+
+var logger = logging.GetLogger("metrics.plugin.elasticsearch")
 
 var graphdef map[string](mp.Graphs) = map[string](mp.Graphs){
 	"elasticsearch.http": mp.Graphs{
@@ -39,17 +42,30 @@ var graphdef map[string](mp.Graphs) = map[string](mp.Graphs){
 		Label: "Elasticsearch Indices Docs",
 		Unit:  "integer",
 		Metrics: [](mp.Metrics){
-			mp.Metrics{Name: "docs_count", Label: "Count"},
-			mp.Metrics{Name: "docs_deleted", Label: "Deleted"},
+			mp.Metrics{Name: "docs_count", Label: "Count", Stacked: true},
+			mp.Metrics{Name: "docs_deleted", Label: "Deleted", Stacked: true},
 		},
 	},
 	"elasticsearch.indices.memory_size": mp.Graphs{
 		Label: "Elasticsearch Indices Memory Size",
 		Unit:  "bytes",
 		Metrics: [](mp.Metrics){
-			mp.Metrics{Name: "fielddata_size", Label: "Fielddata"},
-			mp.Metrics{Name: "filter_cache_size", Label: "Filter Cache"},
+			mp.Metrics{Name: "fielddata_size", Label: "Fielddata", Stacked: true},
+			mp.Metrics{Name: "filter_cache_size", Label: "Filter Cache", Stacked: true},
+			mp.Metrics{Name: "segments_size", Label: "Lucene Segments", Stacked: true},
+			mp.Metrics{Name: "segments_index_writer_size", Label: "Lucene Segments Index Writer", Stacked: true},
+			mp.Metrics{Name: "segments_version_map_size", Label: "Lucene Segments Version Map", Stacked: true},
+			mp.Metrics{Name: "segments_fixed_bit_set_size", Label: "Lucene Segments Fixed Bit Set", Stacked: true},
 		},
+	},
+	"elasticsearch.indices.evictions": mp.Graphs{
+		Label: "Elasticsearch Indices Evictions",
+		Unit: "integer",
+		Metrics: [](mp.Metrics){
+			mp.Metrics{Name: "evictions_fielddata", Label: "Fielddata", Diff: true},
+			mp.Metrics{Name: "evictions_filter_cache", Label: "Filter Cache", Diff: true},
+		},
+
 	},
 	"elasticsearch.jvm.heap": mp.Graphs{
 		Label: "Elasticsearch JVM Heap Mem",
@@ -92,42 +108,48 @@ var graphdef map[string](mp.Graphs) = map[string](mp.Graphs){
 }
 
 var metricPlace map[string][]string = map[string][]string{
-	"http_opened":           []string{"http", "total_opened"},
-	"total_indexing_index":  []string{"indices", "indexing", "index_total"},
-	"total_indexing_delete": []string{"indices", "indexing", "delete_total"},
-	"total_get":             []string{"indices", "get", "total"},
-	"total_search_query":    []string{"indices", "search", "query_total"},
-	"total_search_fetch":    []string{"indices", "search", "fetch_total"},
-	"total_merges":          []string{"indices", "merges", "total"},
-	"total_refresh":         []string{"indices", "refresh", "total"},
-	"total_flush":           []string{"indices", "flush", "total"},
-	"total_warmer":          []string{"indices", "warmer", "total"},
-	"total_percolate":       []string{"indices", "percolate", "total"},
-	"total_suggest":         []string{"indices", "suggest", "total"},
-	"docs_count":            []string{"indices", "docs", "count"},
-	"docs_deleted":          []string{"indices", "docs", "deleted"},
-	"fielddata_size":        []string{"indices", "fielddata", "memory_size_in_bytes"},
-	"filter_cache_size":     []string{"indices", "filter_cache", "memory_size_in_bytes"},
-	"heap_used":             []string{"jvm", "mem", "heap_used_in_bytes"},
-	"heap_max":              []string{"jvm", "mem", "heap_max_in_bytes"},
-	"threads_generic":       []string{"thread_pool", "generic", "threads"},
-	"threads_index":         []string{"thread_pool", "index", "threads"},
-	"threads_snapshot_data": []string{"thread_pool", "snapshot_data", "threads"},
-	"threads_get":           []string{"thread_pool", "get", "threads"},
-	"threads_bench":         []string{"thread_pool", "bench", "threads"},
-	"threads_snapshot":      []string{"thread_pool", "snapshot", "threads"},
-	"threads_merge":         []string{"thread_pool", "merge", "threads"},
-	"threads_suggest":       []string{"thread_pool", "suggest", "threads"},
-	"threads_bulk":          []string{"thread_pool", "bulk", "threads"},
-	"threads_optimize":      []string{"thread_pool", "optimize", "threads"},
-	"threads_warmer":        []string{"thread_pool", "warmer", "threads"},
-	"threads_flush":         []string{"thread_pool", "flush", "threads"},
-	"threads_search":        []string{"thread_pool", "search", "threads"},
-	"threads_percolate":     []string{"thread_pool", "percolate", "threads"},
-	"threads_refresh":       []string{"thread_pool", "refresh", "threads"},
-	"threads_management":    []string{"thread_pool", "management", "threads"},
-	"count_rx":              []string{"transport", "rx_count"},
-	"count_tx":              []string{"transport", "tx_count"},
+	"http_opened":                 []string{"http", "total_opened"},
+	"total_indexing_index":        []string{"indices", "indexing", "index_total"},
+	"total_indexing_delete":       []string{"indices", "indexing", "delete_total"},
+	"total_get":                   []string{"indices", "get", "total"},
+	"total_search_query":          []string{"indices", "search", "query_total"},
+	"total_search_fetch":          []string{"indices", "search", "fetch_total"},
+	"total_merges":                []string{"indices", "merges", "total"},
+	"total_refresh":               []string{"indices", "refresh", "total"},
+	"total_flush":                 []string{"indices", "flush", "total"},
+	"total_warmer":                []string{"indices", "warmer", "total"},
+	"total_percolate":             []string{"indices", "percolate", "total"},
+	"total_suggest":               []string{"indices", "suggest", "total"},
+	"docs_count":                  []string{"indices", "docs", "count"},
+	"docs_deleted":                []string{"indices", "docs", "deleted"},
+	"fielddata_size":              []string{"indices", "fielddata", "memory_size_in_bytes"},
+	"filter_cache_size":           []string{"indices", "filter_cache", "memory_size_in_bytes"},
+	"segments_size":               []string{"indices", "segments", "memory_in_bytes"},
+	"segments_index_writer_size":  []string{"indices", "segments", "index_writer_memory_in_bytes"},
+	"segments_version_map_size":   []string{"indices", "segments", "version_map_memory_in_bytes"},
+	"segments_fixed_bit_set_size": []string{"indices", "segments", "fixed_bit_set_memory_in_bytes"},
+	"evictions_fielddata":         []string{"indices", "fielddata", "evictions"},
+	"evictions_filter_cache":      []string{"indices", "filter_cache", "evictions"},
+	"heap_used":                   []string{"jvm", "mem", "heap_used_in_bytes"},
+	"heap_max":                    []string{"jvm", "mem", "heap_max_in_bytes"},
+	"threads_generic":             []string{"thread_pool", "generic", "threads"},
+	"threads_index":               []string{"thread_pool", "index", "threads"},
+	"threads_snapshot_data":       []string{"thread_pool", "snapshot_data", "threads"},
+	"threads_get":                 []string{"thread_pool", "get", "threads"},
+	"threads_bench":               []string{"thread_pool", "bench", "threads"},
+	"threads_snapshot":            []string{"thread_pool", "snapshot", "threads"},
+	"threads_merge":               []string{"thread_pool", "merge", "threads"},
+	"threads_suggest":             []string{"thread_pool", "suggest", "threads"},
+	"threads_bulk":                []string{"thread_pool", "bulk", "threads"},
+	"threads_optimize":            []string{"thread_pool", "optimize", "threads"},
+	"threads_warmer":              []string{"thread_pool", "warmer", "threads"},
+	"threads_flush":               []string{"thread_pool", "flush", "threads"},
+	"threads_search":              []string{"thread_pool", "search", "threads"},
+	"threads_percolate":           []string{"thread_pool", "percolate", "threads"},
+	"threads_refresh":             []string{"thread_pool", "refresh", "threads"},
+	"threads_management":          []string{"thread_pool", "management", "threads"},
+	"count_rx":                    []string{"transport", "rx_count"},
+	"count_tx":                    []string{"transport", "tx_count"},
 }
 
 func GetFloatValue(s map[string]interface{}, keys []string) (float64, error) {
@@ -187,7 +209,8 @@ func (p ElasticsearchPlugin) FetchMetrics() (map[string]float64, error) {
 	for k, v := range metricPlace {
 		val, err := GetFloatValue(node, v)
 		if err != nil {
-			return nil, err
+			logger.Errorf("Failed to find '%s': %s", k, err)
+			continue
 		}
 
 		stat[k] = val
