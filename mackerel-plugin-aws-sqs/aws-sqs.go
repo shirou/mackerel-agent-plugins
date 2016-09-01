@@ -3,25 +3,30 @@ package main
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/crowdmob/goamz/aws"
-	"github.com/crowdmob/goamz/cloudwatch"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/cloudwatch"
+
 	mp "github.com/mackerelio/go-mackerel-plugin"
 )
 
 var graphdef map[string](mp.Graphs) = map[string](mp.Graphs){
 	"sqs.Messages": mp.Graphs{
-		Label: "SQS NumberOfMessagesSent",
+		Label: "SQS Message metrics",
 		Unit:  "integer",
 		Metrics: [](mp.Metrics){
 			mp.Metrics{Name: "NumberOfMessagesSent", Label: "NumberOfMessagesSent"},
 			mp.Metrics{Name: "NumberOfMessagesReceived", Label: "NumberOfMessagesReceived"},
-			mp.Metrics{Name: "NumberOfEmptyReceives", Label: "NumberOfEmptyReceives"},
 			mp.Metrics{Name: "NumberOfMessagesDeleted", Label: "NumberOfMessagesDeleted"},
+			mp.Metrics{Name: "NumberOfEmptyReceives", Label: "NumberOfEmptyReceives"},
 		},
 	},
 	"sqs.MessageSize": mp.Graphs{
@@ -32,7 +37,7 @@ var graphdef map[string](mp.Graphs) = map[string](mp.Graphs){
 		},
 	},
 	"sqs.Queue": mp.Graphs{
-		Label: "SQS Queue Status",
+		Label: "SQS Approximate Message Stats",
 		Unit:  "integer",
 		Metrics: [](mp.Metrics){
 			mp.Metrics{Name: "ApproximateNumberOfMessagesDelayed", Label: "ApproximateNumberOfMessagesDelayed"},
@@ -46,31 +51,42 @@ type SQSPlugin struct {
 	Region          string
 	AccessKeyId     string
 	SecretAccessKey string
+	Credentials     *credentials.Credentials
 	QueueName       string
+	CloudWatch      *cloudwatch.CloudWatch
 }
 
-func GetLastPoint(cloudWatch *cloudwatch.CloudWatch, dimension *cloudwatch.Dimension, metricName string) (float64, error) {
+func getLastPoint(cloudWatch *cloudwatch.CloudWatch, dimension *cloudwatch.Dimension, metricName string) (float64, error) {
 	now := time.Now()
 
-	statistics := []string{"Sum"}
-	if strings.HasPrefix(metricName, "Approximate") {
-		statistics = []string{"Average"}
+	unit := "Count"
+	statistics := []*string{}
+	switch {
+	case metricName == "SentMessageSize":
+		unit = "Bytes"
+		//statistics = []*string{"Minimum, Maximum, Average, Count"}
+		statistics = []*string{aws.String("Average")}
+	case strings.HasPrefix(metricName, "Approximate"):
+		statistics = []*string{aws.String("Average")}
+	default:
+		statistics = []*string{aws.String("Sum")}
 	}
 
-	response, err := cloudWatch.GetMetricStatistics(&cloudwatch.GetMetricStatisticsRequest{
-		Dimensions: []cloudwatch.Dimension{*dimension},
-		StartTime:  now.Add(time.Duration(180) * time.Second * -1), // 3 min (to fetch at least 1 data-point)
-		EndTime:    now,
-		MetricName: metricName,
-		Period:     60,
+	response, err := cloudWatch.GetMetricStatistics(&cloudwatch.GetMetricStatisticsInput{
+		StartTime:  aws.Time(now.Add(time.Duration(300) * time.Second * -1)),
+		EndTime:    aws.Time(now),
+		Period:     aws.Int64(60),
+		Namespace:  aws.String("AWS/SQS"),
+		Dimensions: []*cloudwatch.Dimension{dimension},
+		MetricName: aws.String(metricName),
+		Unit:       aws.String(unit),
 		Statistics: statistics,
-		Namespace:  "AWS/SQS",
 	})
 	if err != nil {
 		return 0, err
 	}
 
-	datapoints := response.GetMetricStatisticsResult.Datapoints
+	datapoints := response.Datapoints
 	if len(datapoints) == 0 {
 		return 0, errors.New("fetched no datapoints")
 	}
@@ -82,34 +98,36 @@ func GetLastPoint(cloudWatch *cloudwatch.CloudWatch, dimension *cloudwatch.Dimen
 			continue
 		}
 
-		latest = dp.Timestamp
-		latestVal = dp.Average
+		latest = *dp.Timestamp
+		switch {
+		case metricName == "SentMessageSize":
+			latestVal = *dp.Average
+		case strings.HasPrefix(metricName, "Approximate"):
+			latestVal = *dp.Average
+		default:
+			latestVal = *dp.Sum
+		}
 	}
 
 	return latestVal, nil
 }
 
 func (p SQSPlugin) FetchMetrics() (map[string]float64, error) {
-	auth, err := aws.GetAuth(p.AccessKeyId, p.SecretAccessKey, "", time.Now())
-	if err != nil {
-		return nil, err
-	}
-
-	cloudWatch, err := cloudwatch.NewCloudWatch(auth, aws.Regions[p.Region].CloudWatchServicepoint)
-	if err != nil {
-		return nil, err
+	if p.QueueName == "" {
+		return nil, errors.New("no queuename")
 	}
 
 	stat := make(map[string]float64)
 
+	p.CloudWatch = cloudwatch.New(session.New(&aws.Config{Credentials: p.Credentials, Region: &p.Region}))
 	perQueueName := &cloudwatch.Dimension{
-		Name:  "QueueName",
-		Value: p.QueueName,
+		Name:  aws.String("QueueName"),
+		Value: aws.String(p.QueueName),
 	}
 
 	for _, met := range [...]string{
-		"NumberOfMessagesSent",
 		"SentMessageSize",
+		"NumberOfMessagesSent",
 		"NumberOfMessagesReceived",
 		"NumberOfEmptyReceives",
 		"NumberOfMessagesDeleted",
@@ -117,7 +135,7 @@ func (p SQSPlugin) FetchMetrics() (map[string]float64, error) {
 		"ApproximateNumberOfMessagesVisible",
 		"ApproximateNumberOfMessagesNotVisible",
 	} {
-		v, err := GetLastPoint(cloudWatch, perQueueName, met)
+		v, err := getLastPoint(p.CloudWatch, perQueueName, met)
 		if err == nil {
 			stat[met] = v
 		} else {
@@ -136,27 +154,28 @@ func main() {
 	optRegion := flag.String("region", "", "AWS Region")
 	optAccessKeyId := flag.String("access-key-id", "", "AWS Access Key ID")
 	optSecretAccessKey := flag.String("secret-access-key", "", "AWS Secret Access Key")
-	optQueueName := flag.String("queuename", "", "QueueName")
+	optQueueName := flag.String("queuename", "", "Queue Name")
 	optTempfile := flag.String("tempfile", "", "Temp file name")
 	flag.Parse()
 
 	var sqs SQSPlugin
 
-	if *optRegion == "" {
-		sqs.Region = aws.InstanceRegion()
-	} else {
-		sqs.Region = *optRegion
-	}
-
 	sqs.AccessKeyId = *optAccessKeyId
 	sqs.SecretAccessKey = *optSecretAccessKey
+	sqs.Region = *optRegion
 	sqs.QueueName = *optQueueName
+
+	if *optRegion == "" {
+		// get metadata in ec2 instance
+		ec2MC := ec2metadata.New(session.New())
+		sqs.Region, _ = ec2MC.Region()
+	}
 
 	helper := mp.NewMackerelPlugin(sqs)
 	if *optTempfile != "" {
 		helper.Tempfile = *optTempfile
 	} else {
-		helper.Tempfile = "/tmp/mackerel-plugin-sqs"
+		helper.Tempfile = fmt.Sprintf("/tmp/mackerel-plugin-aws-sqs-%s", *optQueueName)
 	}
 
 	if os.Getenv("MACKEREL_AGENT_PLUGIN_META") != "" {
